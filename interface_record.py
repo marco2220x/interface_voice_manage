@@ -24,6 +24,8 @@ class VoiceRecorder:
         self.filtered_audio_audiodata = []
         self.audio_text = ""
         self.recording = False
+        self.playback_speed = 1.0  # Velocidad de reproducción normal por defecto
+        self.is_playing = False
 
         self.root = tk.Tk()
         self.root.title("Grabador de voz inteligente")
@@ -98,7 +100,6 @@ class VoiceRecorder:
         self.label_filtorder.config(text=f"   Orden de filtro: [{filtorder}]   ")
 
     def apply_filter(self):
-
         frec_corte = self.scale_cutfreq.get()  # Frecuencia de corte en Hz
         tasa_muestreo = self.audio_sr
 
@@ -132,7 +133,6 @@ class VoiceRecorder:
         guardar_audio(self.OUTPUT_FILENAME_FILT, tasa_muestreo, self.filtered_audio_audiodata)
 
         self.show_audio_window()
-
 
     def select_filter(self):
         filter_selected = self.filter_list.curselection()
@@ -287,18 +287,40 @@ class VoiceRecorder:
         # Nueva ventana para reproducir audio y mostrar gráficas
         audio_window = tk.Toplevel(self.root)
         audio_window.title("Reproducir Audio y Ver Gráficas")
-        audio_window.geometry("800x600")
+        audio_window.geometry("800x700")
+
+        # Frame para controles de reproducción
+        playback_frame = tk.Frame(audio_window)
+        playback_frame.pack(pady=10)
+
+        # Frame para controles de velocidad
+        speed_frame = tk.Frame(audio_window)
+        speed_frame.pack(pady=10)
+
+        # Etiqueta y slider para control de velocidad
+        self.label_playback_speed = tk.Label(speed_frame, text="Velocidad de reproducción: 1.0x", font=("Arial", 10))
+        self.label_playback_speed.pack()
+
+        self.speed_slider = tk.Scale(speed_frame, from_=0.5, to=2.0, resolution=0.1, orient="horizontal",
+                                    command=self.update_playback_speed)
+        self.speed_slider.set(1.0)
+        self.speed_slider.pack()
 
         # Crear botones para reproducir audio
-        play_original_button = tk.Button(audio_window, text="Reproducir Audio Original", command=self.play_original_audio)
-        play_filtered_button = tk.Button(audio_window, text="Reproducir Audio Filtrado", command=self.play_filtered_audio)
-        play_original_button.pack(pady=10)
-        play_filtered_button.pack(pady=10)
+        play_original_button = tk.Button(playback_frame, text="Reproducir Audio Original", 
+                                       command=lambda: threading.Thread(target=self.play_original_audio).start())
+        play_filtered_button = tk.Button(playback_frame, text="Reproducir Audio Filtrado", 
+                                        command=lambda: threading.Thread(target=self.play_filtered_audio).start())
+        
+        play_original_button.pack(side=tk.LEFT, padx=10)
+        play_filtered_button.pack(side=tk.LEFT, padx=10)
 
-        show_cutfreq_button = tk.Button(audio_window, text="Ver Frecuencia de Corte", command=self.show_cutfreq_graph)
-        show_cutfreq_button.pack(pady=10)
         # Crear gráficas para mostrar las señales de audio
         self.plot_audio_graphs(audio_window)
+
+    def update_playback_speed(self, val):
+        self.playback_speed = float(val)
+        self.label_playback_speed.config(text=f"Velocidad de reproducción: {self.playback_speed:.1f}x")
 
     def play_original_audio(self):
         self.play_audio(self.OUTPUT_FILENAME)
@@ -307,21 +329,37 @@ class VoiceRecorder:
         self.play_audio(self.OUTPUT_FILENAME_FILT)
 
     def play_audio(self, filename):
-        wf = wave.open(filename, 'rb')
-        p = pyaudio.PyAudio()
-        stream = p.open(format=p.get_format_from_width(wf.getsampwidth()),
-                        channels=wf.getnchannels(),
-                        rate=wf.getframerate(),
-                        output=True)
+        if self.is_playing:
+            return
+            
+        self.is_playing = True
+        
+        try:
+            wf = wave.open(filename, 'rb')
+            p = pyaudio.PyAudio()
+            
+            # Calcular el rate ajustado según la velocidad de reproducción
+            original_rate = wf.getframerate()
+            adjusted_rate = int(original_rate * self.playback_speed)
+            
+            stream = p.open(format=p.get_format_from_width(wf.getsampwidth()),
+                           channels=wf.getnchannels(),
+                           rate=adjusted_rate,
+                           output=True)
 
-        data = wf.readframes(1024)
-        while data:
-            stream.write(data)
             data = wf.readframes(1024)
+            while data and self.is_playing:
+                stream.write(data)
+                data = wf.readframes(1024)
 
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+            wf.close()
+        except Exception as e:
+            print(f"Error al reproducir audio: {e}")
+        finally:
+            self.is_playing = False
 
     def plot_audio_graphs(self, parent_window):
         # Crear gráficas para la señal original y filtrada
@@ -338,18 +376,17 @@ class VoiceRecorder:
         ax1.legend()
 
         # Gráfico del audio filtrado (si está disponible)
-        if self.filtered_audio_audiodata is not None and self.filtered_audio_audiodata.size > 0:
+        if hasattr(self, 'filtered_audio_audiodata') and len(self.filtered_audio_audiodata) > 0:
             ax2.plot(tiempo, self.filtered_audio_audiodata, label='Señal Filtrada', color='orange')
-            ax2.set_title('Señal Filtrada con un Filtro IIR pasa bajo')
+            ax2.set_title('Señal Filtrada')
             ax2.set_xlabel('Tiempo (s)')
             ax2.set_ylabel('Amplitud')
             ax2.legend()
         else:
             ax2.plot([])  # Si no hay audio filtrado, muestra un gráfico vacío
-            ax2.set_title('Señal Filtrada')
+            ax2.set_title('Señal Filtrada (no disponible)')
             ax2.set_xlabel('Tiempo (s)')
             ax2.set_ylabel('Amplitud')
-
 
         plt.tight_layout()
 
@@ -357,30 +394,5 @@ class VoiceRecorder:
         canvas = FigureCanvasTkAgg(fig, master=parent_window)
         canvas.draw()
         canvas.get_tk_widget().pack()
-
-    def show_cutfreq_graph(self):
-        cutfreq = self.scale_cutfreq.get()  # Obtener el valor del slider (frecuencia de corte)
-
-        # Crear una nueva ventana
-        cutfreq_window = tk.Toplevel(self.root)
-        cutfreq_window.title("Gráfica de Frecuencia de Corte")
-        cutfreq_window.geometry("600x400")
-
-        # Crear la figura y el eje para la gráfica
-        fig, ax = plt.subplots()
-        ax.axvline(x=cutfreq, color='red', linestyle='--', label=f'Frecuencia de corte: {cutfreq:.1f} Hz')
-        ax.set_title('Frecuencia de Corte')
-        ax.set_xlabel('Frecuencia (Hz)')
-        ax.set_xlim(0, self.audio_sr / 2)
-        ax.set_ylim(0, 1)
-        ax.legend()
-        ax.grid(True)
-
-        # Incrustar la figura de matplotlib dentro de la ventana Tkinter
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-        canvas = FigureCanvasTkAgg(fig, master=cutfreq_window)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
 
 VoiceRecorder()
